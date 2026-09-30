@@ -77,6 +77,7 @@ git clone https://github.com/MohamedImthiyas-M/ML-Speech-Enhancer.git
 Then enter the project folder:
 ```bash
 cd ML-Speech-Enhancer
+```bash
 
 #3. Create a Virtual Environment
 
