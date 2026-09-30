@@ -73,3 +73,13 @@ Run:
 
 ```bash
 git clone https://github.com/MohamedImthiyas-M/ML-Speech-Enhancer.git
+
+Then enter the project folder:
+```bash
+cd ML-Speech-Enhancer
+
+#3. Create a Virtual Environment
+
+This keeps the project's Python packages separate from your other projects.
+
+Run:
