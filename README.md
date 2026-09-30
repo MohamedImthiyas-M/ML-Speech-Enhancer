@@ -8,7 +8,7 @@ The project uses a Residual Attention U-Net architecture with time-frequency aud
 
 ---
 
-## 🎯 What does this project do?
+##  What does this project do?
 
 The system takes a noisy speech recording:
 
@@ -36,7 +36,7 @@ Example:
 
 ---
 
-# 🚀 Quick Start
+#  Quick Start
 
 You can run this project on Windows, Linux, or macOS.
 
