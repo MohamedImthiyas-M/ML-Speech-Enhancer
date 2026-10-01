@@ -67,7 +67,7 @@ CPU can be used for testing and inference, but training will be much slower.
 
 # 2. Download the Project
 
-Open a terminal or Command Prompt.
+**Open a terminal or Command Prompt.**
 
 Run:
 
