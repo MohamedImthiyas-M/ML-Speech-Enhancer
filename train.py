@@ -2,38 +2,28 @@
 ==========================================================
 train.py
 
-Professional Trainer
-Residual Attention U-Net Speech Enhancer
+AI Speech Enhancer V3 Training
 
-Features
---------
-✓ GPU / CPU Support
-✓ Mixed Precision (AMP)
-✓ Validation
-✓ Checkpoints
-✓ Resume Training
-✓ Progress Bar
-✓ Best Model Saving
+Residual Attention U-Net
+Direct Clean Spectrogram Regression
 
 ==========================================================
 """
 
-import os
-from pathlib import Path
+import random
 
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
-from torch.utils.data import random_split
-from torch.amp import autocast, GradScaler
-from tqdm import tqdm
+from torch.utils.data import DataLoader, random_split
 
 from config import (
     DEVICE,
-    LEARNING_RATE,
-    WEIGHT_DECAY,
     BATCH_SIZE,
     EPOCHS,
+    LEARNING_RATE,
+    WEIGHT_DECAY,
+    GRAD_CLIP,
+    PATIENCE,
     CHECKPOINT_DIR
 )
 
@@ -41,325 +31,713 @@ from dataset_loader import SpeechEnhancementDataset
 
 from models.unet import ResidualAttentionUNet
 
-from models.loss import HybridSpeechLoss
 
 # ==========================================================
-# DATASET
+# REPRODUCIBILITY
 # ==========================================================
 
-dataset = SpeechEnhancementDataset()
+SEED = 42
 
-train_size = int(
-    0.9 * len(dataset)
-)
+random.seed(SEED)
+torch.manual_seed(SEED)
 
-val_size = len(dataset) - train_size
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
-train_dataset, val_dataset = random_split(
-    dataset,
-    [train_size, val_size]
-)
-
-train_loader = torch.utils.data.DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True
-)
-
-val_loader = torch.utils.data.DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False
-)
 
 # ==========================================================
-# MODEL
+# TRAIN / VALIDATION SPLIT
 # ==========================================================
 
-model = ResidualAttentionUNet().to(
-    DEVICE
-)
-torch.cuda.empty_cache()
-criterion = HybridSpeechLoss()
+VALIDATION_RATIO = 0.20
 
-optimizer = AdamW(
-
-    model.parameters(),
-
-    lr=LEARNING_RATE,
-
-    weight_decay=WEIGHT_DECAY
-
-)
-
-scaler = GradScaler("cuda")
 
 # ==========================================================
-# SAVE MODEL
+# LOSS FUNCTION
 # ==========================================================
 
-def save_checkpoint(
+class SpectrogramLoss(nn.Module):
 
-        epoch,
+    def __init__(self):
 
-        model,
+        super().__init__()
 
-        optimizer,
+        self.l1 = nn.L1Loss()
 
-        loss,
+        self.mse = nn.MSELoss()
 
-        filename
+    def forward(
+        self,
+        prediction,
+        target
+    ):
 
-):
+        l1_loss = self.l1(
+            prediction,
+            target
+        )
 
-    torch.save(
+        mse_loss = self.mse(
+            prediction,
+            target
+        )
 
-        {
+        # L1 is the main loss.
+        # MSE helps keep larger errors under control.
 
-            "epoch": epoch,
+        total_loss = (
+            0.8 * l1_loss +
+            0.2 * mse_loss
+        )
 
-            "model": model.state_dict(),
+        return total_loss
 
-            "optimizer": optimizer.state_dict(),
-
-            "loss": loss
-
-        },
-
-        filename
-
-    )
 
 # ==========================================================
-# LOAD MODEL
-# ==========================================================
-
-def load_checkpoint(path):
-
-    if not os.path.exists(path):
-
-        return 0
-
-    checkpoint = torch.load(
-
-        path,
-
-        map_location=DEVICE
-
-    )
-
-    model.load_state_dict(
-
-        checkpoint["model"]
-
-    )
-
-    optimizer.load_state_dict(
-
-        checkpoint["optimizer"]
-
-    )
-
-    print(
-
-        "Resumed from Epoch",
-
-        checkpoint["epoch"]
-
-    )
-
-    return checkpoint["epoch"] + 1
-
-
-   # ==========================================================
 # TRAIN ONE EPOCH
 # ==========================================================
 
-def train_one_epoch(epoch):
+def train_one_epoch(
+    model,
+    loader,
+    criterion,
+    optimizer
+):
 
     model.train()
 
-    running_loss = 0.0
+    total_loss = 0.0
 
-    progress = tqdm(
-        train_loader,
-        desc=f"Train Epoch {epoch+1}/{EPOCHS}"
-    )
+    batches = 0
 
-    for batch in progress:
+    for batch in loader:
 
+        noisy = batch["noisy"].to(
+            DEVICE,
+            non_blocking=True
+        )
 
-        # ----------------------------------
-        # Load batch
-        # ----------------------------------
+        clean = batch["clean"].to(
+            DEVICE,
+            non_blocking=True
+        )
 
-        noisy = batch["noisy"].to(DEVICE)
+        # --------------------------------------------------
+        # Check input
+        # --------------------------------------------------
 
-        clean = batch["clean"].to(DEVICE)
+        if not torch.isfinite(
+            noisy
+        ).all():
 
-        optimizer.zero_grad()
-
-        # ----------------------------------
-        # Forward
-        # ----------------------------------
-
-        with autocast(device_type="cuda"):
-
-            prediction = model(noisy)
-
-            loss = criterion(
-                prediction,
-                clean
+            raise RuntimeError(
+                "NaN/Inf detected in noisy input."
             )
 
-        # ----------------------------------
-        # Backward
-        # ----------------------------------
+        if not torch.isfinite(
+            clean
+        ).all():
 
-        scaler.scale(loss).backward()
+            raise RuntimeError(
+                "NaN/Inf detected in clean target."
+            )
+
+        # --------------------------------------------------
+        # Clear gradients
+        # --------------------------------------------------
+
+        optimizer.zero_grad(
+            set_to_none=True
+        )
+
+        # --------------------------------------------------
+        # Forward
+        # --------------------------------------------------
+
+        prediction = model(
+            noisy
+        )
+
+        # --------------------------------------------------
+        # Check prediction
+        # --------------------------------------------------
+
+        if not torch.isfinite(
+            prediction
+        ).all():
+
+            raise RuntimeError(
+                "Model produced NaN/Inf values."
+            )
+
+        # --------------------------------------------------
+        # Loss
+        # --------------------------------------------------
+
+        loss = criterion(
+            prediction,
+            clean
+        )
+
+        if not torch.isfinite(
+            loss
+        ):
+
+            raise RuntimeError(
+                "Loss became NaN/Inf."
+            )
+
+        # --------------------------------------------------
+        # Backward
+        # --------------------------------------------------
+
+        loss.backward()
+
+        # --------------------------------------------------
+        # Gradient clipping
+        # --------------------------------------------------
 
         torch.nn.utils.clip_grad_norm_(
-
             model.parameters(),
-
-            max_norm=1.0
-
+            GRAD_CLIP
         )
 
-        scaler.step(optimizer)
+        # --------------------------------------------------
+        # Optimizer
+        # --------------------------------------------------
 
-        scaler.update()
+        optimizer.step()
 
-        running_loss += loss.item()
+        total_loss += loss.item()
 
-        progress.set_postfix(
+        batches += 1
 
-            loss=f"{loss.item():.4f}"
+    if batches == 0:
 
-        )
+        return float("inf")
 
-    return running_loss / len(train_loader)
+    return total_loss / batches
 
-   # ==========================================================
+
+# ==========================================================
 # VALIDATION
 # ==========================================================
 
-def validate():
+@torch.no_grad()
+def validate(
+    model,
+    loader,
+    criterion
+):
 
     model.eval()
 
-    running_loss = 0
+    total_loss = 0.0
 
-    with torch.no_grad():
+    batches = 0
 
-        for batch in val_loader:
+    for batch in loader:
 
-            noisy = batch["noisy"].to(DEVICE)
+        noisy = batch["noisy"].to(
+            DEVICE,
+            non_blocking=True
+        )
 
-            clean = batch["clean"].to(DEVICE)
+        clean = batch["clean"].to(
+            DEVICE,
+            non_blocking=True
+        )
 
-            prediction = model(noisy)
+        prediction = model(
+            noisy
+        )
 
-            loss = criterion(
+        if not torch.isfinite(
+            prediction
+        ).all():
 
-                prediction,
-
-                clean
-
+            raise RuntimeError(
+                "NaN/Inf detected during validation."
             )
 
-            running_loss += loss.item()
+        loss = criterion(
+            prediction,
+            clean
+        )
 
-    return running_loss / len(val_loader)
+        if not torch.isfinite(
+            loss
+        ):
 
-   # ==========================================================
-# TRAINING
+            raise RuntimeError(
+                "Validation loss became NaN/Inf."
+            )
+
+        total_loss += loss.item()
+
+        batches += 1
+
+    if batches == 0:
+
+        return float("inf")
+
+    return total_loss / batches
+
+
+# ==========================================================
+# SAVE CHECKPOINT
 # ==========================================================
 
-best_loss = float("inf")
-
-start_epoch = load_checkpoint(
-
-    CHECKPOINT_DIR / "latest.pt"
-
-)
-
-for epoch in range(
-
-    start_epoch,
-
-    EPOCHS
-
+def save_checkpoint(
+    path,
+    epoch,
+    model,
+    optimizer,
+    scheduler,
+    loss
 ):
 
-    train_loss = train_one_epoch(
+    checkpoint = {
 
-        epoch
+        "epoch": epoch,
 
+        "model": model.state_dict(),
+
+        "optimizer": optimizer.state_dict(),
+
+        "scheduler": scheduler.state_dict(),
+
+        "loss": loss,
+
+        "learning_rate":
+            optimizer.param_groups[0]["lr"]
+    }
+
+    torch.save(
+        checkpoint,
+        path
     )
 
-    val_loss = validate()
+
+# ==========================================================
+# MAIN TRAINING
+# ==========================================================
+
+def main():
+
+    print()
+    print(
+        "=================================================="
+    )
+
+    print(
+        "          AI SPEECH ENHANCER V3"
+    )
+
+    print(
+        "          TRAINING"
+    )
+
+    print(
+        "=================================================="
+    )
 
     print()
 
     print(
-
-        f"Epoch {epoch+1}"
-
+        "Device:",
+        DEVICE
     )
 
     print(
-
-        f"Train Loss : {train_loss:.5f}"
-
+        "Batch size:",
+        BATCH_SIZE
     )
 
     print(
-
-        f"Valid Loss : {val_loss:.5f}"
-
+        "Learning rate:",
+        LEARNING_RATE
     )
 
-    # --------------------------------------
-    # Save latest checkpoint
-    # --------------------------------------
-
-    save_checkpoint(
-
-        epoch,
-
-        model,
-
-        optimizer,
-
-        val_loss,
-
-        CHECKPOINT_DIR / "latest.pt"
-
+    print(
+        "Epochs:",
+        EPOCHS
     )
 
-    # --------------------------------------
-    # Save best checkpoint
-    # --------------------------------------
+    print()
 
-    if val_loss < best_loss:
+    # ======================================================
+    # DATASET
+    # ======================================================
 
-        best_loss = val_loss
+    dataset = SpeechEnhancementDataset()
 
-        save_checkpoint(
+    total_samples = len(
+        dataset
+    )
 
-            epoch,
+    if total_samples < 10:
 
-            model,
-
-            optimizer,
-
-            val_loss,
-
-            CHECKPOINT_DIR / "best.pt"
-
+        raise RuntimeError(
+            "\n"
+            "Dataset is too small.\n\n"
+            f"Found only {total_samples} paired audio files.\n"
+            "Please restore the full dataset before training.\n"
+            "Your earlier dataset contained about 1217 pairs."
         )
 
-        print("Best model updated.")
+    validation_size = max(
+        1,
+        int(
+            total_samples *
+            VALIDATION_RATIO
+        )
+    )
 
-      
+    training_size = (
+        total_samples -
+        validation_size
+    )
+
+    generator = torch.Generator().manual_seed(
+        SEED
+    )
+
+    train_dataset, validation_dataset = random_split(
+        dataset,
+        [
+            training_size,
+            validation_size
+        ],
+        generator=generator
+    )
+
+    print(
+        "Total samples:",
+        total_samples
+    )
+
+    print(
+        "Training samples:",
+        len(train_dataset)
+    )
+
+    print(
+        "Validation samples:",
+        len(validation_dataset)
+    )
+
+    print()
+
+    # ======================================================
+    # DATALOADERS
+    # ======================================================
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=(
+            DEVICE.type == "cuda"
+        )
+    )
+
+    validation_loader = DataLoader(
+        validation_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=(
+            DEVICE.type == "cuda"
+        )
+    )
+
+    # ======================================================
+    # MODEL
+    # ======================================================
+
+    model = ResidualAttentionUNet()
+
+    model = model.to(
+        DEVICE
+    )
+
+    # ======================================================
+    # LOSS
+    # ======================================================
+
+    criterion = SpectrogramLoss()
+
+    # ======================================================
+    # OPTIMIZER
+    # ======================================================
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY
+    )
+
+    # ======================================================
+    # SCHEDULER
+    # ======================================================
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=5,
+        min_lr=1e-6
+    )
+
+    # ======================================================
+    # CHECKPOINT PATHS
+    # ======================================================
+
+    CHECKPOINT_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    best_checkpoint = (
+        CHECKPOINT_DIR /
+        "best.pt"
+    )
+
+    latest_checkpoint = (
+        CHECKPOINT_DIR /
+        "latest.pt"
+    )
+
+    # ======================================================
+    # REMOVE OLD V3 CHECKPOINTS
+    # ======================================================
+    #
+    # IMPORTANT:
+    # This training starts from scratch.
+    #
+    # ======================================================
+
+    if best_checkpoint.exists():
+
+        best_checkpoint.unlink()
+
+        print(
+            "Removed old best.pt"
+        )
+
+    if latest_checkpoint.exists():
+
+        latest_checkpoint.unlink()
+
+        print(
+            "Removed old latest.pt"
+        )
+
+    print()
+
+    # ======================================================
+    # TRAINING VARIABLES
+    # ======================================================
+
+    best_validation_loss = float(
+        "inf"
+    )
+
+    epochs_without_improvement = 0
+
+    # ======================================================
+    # TRAINING LOOP
+    # ======================================================
+
+    for epoch in range(
+        1,
+        EPOCHS + 1
+    ):
+
+        print(
+            "=================================================="
+        )
+
+        print(
+            f"Epoch {epoch}/{EPOCHS}"
+        )
+
+        print(
+            "=================================================="
+        )
+
+        # --------------------------------------------------
+        # Training
+        # --------------------------------------------------
+
+        train_loss = train_one_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer
+        )
+
+        # --------------------------------------------------
+        # Validation
+        # --------------------------------------------------
+
+        validation_loss = validate(
+            model,
+            validation_loader,
+            criterion
+        )
+
+        # --------------------------------------------------
+        # Learning rate
+        # --------------------------------------------------
+
+        scheduler.step(
+            validation_loss
+        )
+
+        current_lr = (
+            optimizer
+            .param_groups[0]["lr"]
+        )
+
+        # --------------------------------------------------
+        # Print results
+        # --------------------------------------------------
+
+        print(
+            f"Train Loss : {train_loss:.6f}"
+        )
+
+        print(
+            f"Valid Loss : {validation_loss:.6f}"
+        )
+
+        print(
+            f"Learning Rate : {current_lr:.8f}"
+        )
+
+        # --------------------------------------------------
+        # Save latest
+        # --------------------------------------------------
+
+        save_checkpoint(
+            latest_checkpoint,
+            epoch,
+            model,
+            optimizer,
+            scheduler,
+            validation_loss
+        )
+
+        print(
+            "Latest checkpoint saved."
+        )
+
+        # --------------------------------------------------
+        # Best model
+        # --------------------------------------------------
+
+        if validation_loss < best_validation_loss:
+
+            best_validation_loss = (
+                validation_loss
+            )
+
+            epochs_without_improvement = 0
+
+            save_checkpoint(
+                best_checkpoint,
+                epoch,
+                model,
+                optimizer,
+                scheduler,
+                validation_loss
+            )
+
+            print(
+                "New BEST model saved."
+            )
+
+        else:
+
+            epochs_without_improvement += 1
+
+            print(
+                "No validation improvement."
+            )
+
+            print(
+                "Patience:",
+                f"{epochs_without_improvement}/{PATIENCE}"
+            )
+
+        print()
+
+        # --------------------------------------------------
+        # Early stopping
+        # --------------------------------------------------
+
+        if epochs_without_improvement >= PATIENCE:
+
+            print(
+                "Early stopping triggered."
+            )
+
+            break
+
+    # ======================================================
+    # FINISHED
+    # ======================================================
+
+    print()
+    print(
+        "=================================================="
+    )
+
+    print(
+        "             TRAINING COMPLETED"
+    )
+
+    print(
+        "=================================================="
+    )
+
+    print()
+
+    print(
+        "Best validation loss:",
+        f"{best_validation_loss:.6f}"
+    )
+
+    print()
+
+    print(
+        "Best checkpoint:"
+    )
+
+    print(
+        best_checkpoint
+    )
+
+    print()
+
+    print(
+        "Latest checkpoint:"
+    )
+
+    print(
+        latest_checkpoint
+    )
+
+    print()
+
+
+# ==========================================================
+# RUN
+# ==========================================================
+
+if __name__ == "__main__":
+
+    main()

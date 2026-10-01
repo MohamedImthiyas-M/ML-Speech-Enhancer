@@ -1,57 +1,6 @@
-"""
-==========================================================
-preprocessing.py
-
-Audio preprocessing pipeline for
-Residual Attention U-Net Speech Enhancement
-
-Pipeline:
-
-Audio File
-    |
-    ↓
-Load Audio
-    |
-    ↓
-Convert Mono
-    |
-    ↓
-Resample
-    |
-    ↓
-Fix Length
-    |
-    ↓
-Normalize Waveform
-    |
-    ↓
-STFT
-    |
-    ↓
-Log Magnitude Spectrogram
-    |
-    ↓
-Normalize Spectrogram
-
-
-Functions:
-
-load_audio()
-fix_length()
-normalize_audio()
-waveform_to_spectrogram()
-normalize_spectrogram()
-get_phase()
-spectrogram_to_waveform()
-
-==========================================================
-"""
-
-
 import torch
 import torchaudio
 import torch.nn.functional as F
-
 
 from config import (
     SAMPLE_RATE,
@@ -63,15 +12,7 @@ from config import (
 )
 
 
-
-# ==========================================================
-# HANN WINDOW
-# ==========================================================
-
-WINDOW = torch.hann_window(
-    WIN_LENGTH
-)
-
+WINDOW = torch.hann_window(WIN_LENGTH)
 
 
 # ==========================================================
@@ -79,55 +20,28 @@ WINDOW = torch.hann_window(
 # ==========================================================
 
 def load_audio(path):
-    """
-    Load audio file
 
-    Output:
-        waveform:
-        Shape -> [1, samples]
+    waveform, sample_rate = torchaudio.load(str(path))
 
-    """
-
-    waveform, sample_rate = torchaudio.load(
-        str(path)
-    )
-
-
-    # -------------------------------
-    # Convert stereo to mono
-    # -------------------------------
-
+    # Convert stereo -> mono
     if waveform.shape[0] > 1:
-
         waveform = torch.mean(
             waveform,
             dim=0,
             keepdim=True
         )
 
-
-    # -------------------------------
-    # Resample
-    # -------------------------------
-
+    # Resample if required
     if sample_rate != SAMPLE_RATE:
-
 
         resampler = torchaudio.transforms.Resample(
             sample_rate,
             SAMPLE_RATE
         )
 
-
-        waveform = resampler(
-            waveform
-        )
-
+        waveform = resampler(waveform)
 
     return waveform
-
-
-
 
 
 # ==========================================================
@@ -135,131 +49,68 @@ def load_audio(path):
 # ==========================================================
 
 def fix_length(waveform):
-    """
-    Make every audio same length
-
-    Short audio:
-        zero padding
-
-    Long audio:
-        trimming
-
-    """
 
     current_length = waveform.shape[-1]
 
-
     if current_length < MAX_AUDIO_LENGTH:
 
-
-        padding = (
-            MAX_AUDIO_LENGTH -
-            current_length
-        )
-
+        padding = MAX_AUDIO_LENGTH - current_length
 
         waveform = F.pad(
             waveform,
-            (
-                0,
-                padding
-            )
+            (0, padding)
         )
 
-
     elif current_length > MAX_AUDIO_LENGTH:
-
 
         waveform = waveform[
             :,
             :MAX_AUDIO_LENGTH
         ]
 
-
     return waveform
 
 
-
-
-
 # ==========================================================
-# NORMALIZE WAVEFORM
+# NORMALIZE AUDIO
 # ==========================================================
 
 def normalize_audio(waveform):
-    """
-    Normalize waveform amplitude
-    """
 
     peak = torch.max(
         torch.abs(waveform)
     )
 
+    if peak > EPSILON:
 
-    if peak > 0:
-
-        waveform = (
-            waveform /
-            peak
-        )
-
+        waveform = waveform / peak
 
     return waveform
 
 
-
-
-
 # ==========================================================
-# WAVEFORM -> SPECTROGRAM
+# WAVEFORM -> LOG SPECTROGRAM
 # ==========================================================
 
-def waveform_to_spectrogram(
-        waveform
-):
-    """
-    Convert waveform into
-    log magnitude spectrogram
-
-    Output:
-
-    [frequency, time]
-
-    """
-
+def waveform_to_spectrogram(waveform):
 
     window = WINDOW.to(
         waveform.device
     )
 
-
     stft = torch.stft(
-
         waveform.squeeze(0),
-
         n_fft=N_FFT,
-
         hop_length=HOP_LENGTH,
-
         win_length=WIN_LENGTH,
-
         window=window,
-
         return_complex=True
-
     )
 
+    magnitude = torch.abs(stft)
 
-    magnitude = torch.abs(
-        stft
-    )
+    phase = torch.angle(stft)
 
-    # Save phase for reconstruction
-    phase = torch.angle(
-        stft
-    )  
-
-    # Log compression
     log_spectrogram = torch.log(
         magnitude + EPSILON
     )
@@ -267,35 +118,141 @@ def waveform_to_spectrogram(
     return log_spectrogram, phase
 
 
-
-
-
 # ==========================================================
 # NORMALIZE SPECTROGRAM
 # ==========================================================
 
 def normalize_spectrogram(
-        spectrogram
+    spectrogram,
+    mean=None,
+    std=None
 ):
-    """
-    Standard score normalization
 
-    Helps neural network training
-    """
+    if mean is None:
+        mean = spectrogram.mean()
 
-    mean = spectrogram.mean()
+    if std is None:
+        std = spectrogram.std()
 
-    std = spectrogram.std()
-
-
-    spectrogram = (
+    normalized = (
         spectrogram - mean
     ) / (
         std + EPSILON
     )
 
+    return normalized, mean, std
 
-    return spectrogram
+
+# ==========================================================
+# PREPROCESS AUDIO PAIR
+# ==========================================================
+
+def preprocess_audio(path):
+
+    waveform = load_audio(path)
+
+    waveform = fix_length(
+        waveform
+    )
+
+    waveform = normalize_audio(
+        waveform
+    )
+
+    spectrogram, phase = waveform_to_spectrogram(
+        waveform
+    )
+
+    spectrogram, mean, std = normalize_spectrogram(
+        spectrogram
+    )
+
+    return (
+        spectrogram,
+        phase,
+        mean,
+        std
+    )
+
+
+# ==========================================================
+# PREPROCESS TRAINING PAIR
+# ==========================================================
+
+def preprocess_training_pair(
+    noisy_path,
+    clean_path
+):
+
+    # ------------------------------------------------------
+    # NOISY
+    # ------------------------------------------------------
+
+    noisy_waveform = load_audio(
+        noisy_path
+    )
+
+    noisy_waveform = fix_length(
+        noisy_waveform
+    )
+
+    noisy_waveform = normalize_audio(
+        noisy_waveform
+    )
+
+    noisy_log, noisy_phase = waveform_to_spectrogram(
+        noisy_waveform
+    )
+
+    # ------------------------------------------------------
+    # CLEAN
+    # ------------------------------------------------------
+
+    clean_waveform = load_audio(
+        clean_path
+    )
+
+    clean_waveform = fix_length(
+        clean_waveform
+    )
+
+    clean_waveform = normalize_audio(
+        clean_waveform
+    )
+
+    clean_log, _ = waveform_to_spectrogram(
+        clean_waveform
+    )
+
+    # ------------------------------------------------------
+    # IMPORTANT
+    #
+    # Use the NOISY statistics for BOTH.
+    # ------------------------------------------------------
+
+    noisy_mean = noisy_log.mean()
+
+    noisy_std = noisy_log.std()
+
+    noisy_normalized = (
+        noisy_log - noisy_mean
+    ) / (
+        noisy_std + EPSILON
+    )
+
+    clean_normalized = (
+        clean_log - noisy_mean
+    ) / (
+        noisy_std + EPSILON
+    )
+
+    return (
+        noisy_normalized,
+        clean_normalized,
+        noisy_phase,
+        noisy_mean,
+        noisy_std
+    )
 
 
 # ==========================================================
@@ -303,29 +260,35 @@ def normalize_spectrogram(
 # ==========================================================
 
 def spectrogram_to_waveform(
-        spectrogram,
-        phase
+    normalized_spectrogram,
+    mean,
+    std,
+    phase
 ):
-    """
-    Convert predicted spectrogram
-    back into waveform
 
-    """
+    # ------------------------------------------------------
+    # Denormalize
+    # ------------------------------------------------------
 
+    log_magnitude = (
+        normalized_spectrogram * std
+    ) + mean
 
-    window = WINDOW.to(
-        spectrogram.device
-    )
-
-
-    # Reverse normalization
-    # handled outside model
-
+    # ------------------------------------------------------
+    # Convert log magnitude -> magnitude
+    # ------------------------------------------------------
 
     magnitude = torch.exp(
-        spectrogram
+        torch.clamp(
+            log_magnitude,
+            min=-20.0,
+            max=20.0
+        )
     )
 
+    # ------------------------------------------------------
+    # Complex spectrogram
+    # ------------------------------------------------------
 
     complex_spec = (
         magnitude *
@@ -334,72 +297,38 @@ def spectrogram_to_waveform(
         )
     )
 
+    # ------------------------------------------------------
+    # ISTFT
+    # ------------------------------------------------------
 
-    waveform = torch.istft(
-
-        complex_spec,
-
-        n_fft=N_FFT,
-
-        hop_length=HOP_LENGTH,
-
-        win_length=WIN_LENGTH,
-
-        window=window
-
+    window = WINDOW.to(
+        magnitude.device
     )
 
+    waveform = torch.istft(
+        complex_spec,
+        n_fft=N_FFT,
+        hop_length=HOP_LENGTH,
+        win_length=WIN_LENGTH,
+        window=window,
+        length=MAX_AUDIO_LENGTH
+    )
 
     return waveform
 
 
-
-
-
 # ==========================================================
-# COMPLETE PREPROCESS FUNCTION
+# SAVE-SAFE AUDIO NORMALIZATION
 # ==========================================================
 
-def preprocess_audio(path):
-    """
-    Complete pipeline
+def normalize_output_waveform(waveform):
 
-    Input:
-        audio path
-
-
-    Output:
-
-        normalized spectrogram
-        phase
-
-    """
-
-
-    waveform = load_audio(
-        path
+    peak = torch.max(
+        torch.abs(waveform)
     )
 
+    if peak > EPSILON:
 
-    waveform = fix_length(
-        waveform
-    )
+        waveform = waveform / peak
 
-
-    waveform = normalize_audio(
-        waveform
-    )
-
-
-    spectrogram, phase = waveform_to_spectrogram(
-        waveform
-    )
-
-    spectrogram = normalize_spectrogram(
-        spectrogram
-    )
-
-    return (
-        spectrogram,
-        phase
-    )
+    return waveform

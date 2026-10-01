@@ -1,121 +1,73 @@
-"""
-==========================================================
-dataset_loader.py
-
-PyTorch Dataset Loader for
-Residual Attention U-Net Speech Enhancement
-
-
-Input:
-    noisy speech
-
-
-Target:
-    clean speech
-
-
-Output:
-
-    noisy spectrogram
-    clean spectrogram
-
-==========================================================
-"""
-
-
-import os
 from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-
 from config import (
     CLEAN_DIR,
     NOISY_DIR,
-    BATCH_SIZE
+    BATCH_SIZE,
+    NUM_WORKERS,
+    DEVICE
 )
 
-
-from preprocessing import (
-    preprocess_audio
-)
-
-from config import NUM_WORKERS
-from config import DEVICE
-
-
+from preprocessing import preprocess_training_pair
 
 
 # ==========================================================
-# SPEECH DATASET
+# DATASET
 # ==========================================================
-
 
 class SpeechEnhancementDataset(Dataset):
 
-    """
-    Dataset for paired noisy-clean speech
-    """
-
-
     def __init__(
-            self,
-            noisy_dir=NOISY_DIR,
-            clean_dir=CLEAN_DIR
+        self,
+        noisy_dir=NOISY_DIR,
+        clean_dir=CLEAN_DIR
     ):
-
 
         self.noisy_dir = Path(
             noisy_dir
         )
 
-
         self.clean_dir = Path(
             clean_dir
         )
 
-
         self.files = []
 
-
-        # Find matching files
+        # --------------------------------------------------
+        # Find matching noisy/clean pairs
+        # --------------------------------------------------
 
         for file in self.noisy_dir.iterdir():
 
-
-            if file.suffix.lower() in [
+            if file.suffix.lower() not in [
                 ".wav",
                 ".mp3",
                 ".flac",
                 ".ogg",
                 ".m4a"
             ]:
+                continue
 
+            clean_file = (
+                self.clean_dir /
+                file.name
+            )
 
-                clean_file = (
-                    self.clean_dir /
+            if clean_file.exists():
+
+                self.files.append(
                     file.name
                 )
 
-
-                if clean_file.exists():
-
-                    self.files.append(
-                        file.name
-                    )
-
+        self.files.sort()
 
         print(
             "Total audio pairs:",
             len(self.files)
         )
-
-
-
-    # ------------------------------------------------------
-    # Dataset length
-    # ------------------------------------------------------
 
     def __len__(self):
 
@@ -123,112 +75,86 @@ class SpeechEnhancementDataset(Dataset):
             self.files
         )
 
-
-
-    # ------------------------------------------------------
-    # Get item
-    # ------------------------------------------------------
-
     def __getitem__(
-            self,
-            index
+        self,
+        index
     ):
 
-
         filename = self.files[index]
-
-
 
         noisy_path = (
             self.noisy_dir /
             filename
         )
 
-
         clean_path = (
             self.clean_dir /
             filename
         )
 
-
-
-        # -------------------------------
-        # Preprocess noisy audio
-        # -------------------------------
-
-        noisy_spec, noisy_phase = preprocess_audio(
-            noisy_path
-        )
-
-
-
-        # -------------------------------
-        # Preprocess clean audio
-        # -------------------------------
-
-        clean_spec, _ = preprocess_audio(
+        (
+            noisy_spec,
+            clean_spec,
+            noisy_phase,
+            noisy_mean,
+            noisy_std
+        ) = preprocess_training_pair(
+            noisy_path,
             clean_path
         )
 
-
-
+        # --------------------------------------------------
         # Add channel dimension
+        # --------------------------------------------------
 
-        noisy_spec = noisy_spec.unsqueeze(
-            0
-        )
+        noisy_spec = noisy_spec.unsqueeze(0)
 
-
-        clean_spec = clean_spec.unsqueeze(
-            0
-        )
-
-
+        clean_spec = clean_spec.unsqueeze(0)
 
         return {
+            "noisy": noisy_spec.float(),
 
-           "noisy": noisy_spec.float(),
+            "clean": clean_spec.float(),
 
-           "clean": clean_spec.float(),
+            "phase": noisy_phase.float(),
 
-           "phase": noisy_phase.float(),
+            "mean": noisy_mean.float(),
 
-           "filename": filename
+            "std": noisy_std.float(),
 
+            "filename": filename
         }
 
 
-
-
-
-
-
 # ==========================================================
-# DATA LOADER CREATION
+# DATALOADER
 # ==========================================================
 
-
-def create_dataloader(shuffle=True):
+def create_dataloader(
+    shuffle=True
+):
 
     dataset = SpeechEnhancementDataset()
 
     loader = DataLoader(
-
         dataset,
-
         batch_size=BATCH_SIZE,
-
         shuffle=shuffle,
-
         num_workers=NUM_WORKERS,
 
-        pin_memory=(DEVICE.type == "cuda"),
+        pin_memory=(
+            DEVICE.type == "cuda"
+        ),
 
-        persistent_workers=(NUM_WORKERS > 0),
+        persistent_workers=(
+            NUM_WORKERS > 0
+        ),
 
-        prefetch_factor=2 if NUM_WORKERS > 0 else None
-
+        prefetch_factor=(
+            2
+            if NUM_WORKERS > 0
+            else None
+        )
     )
-
 
     return loader

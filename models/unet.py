@@ -2,29 +2,14 @@
 ==========================================================
 unet.py
 
-Residual Attention U-Net V2
+Residual Attention U-Net V3
+Direct Clean Spectrogram Regression
 
-Architecture
+Input:
+    Noisy normalized log spectrogram
 
-Input
- ↓
-Conv
- ↓
-Encoder 1
- ↓
-Encoder 2
- ↓
-Encoder 3
- ↓
-Encoder 4
- ↓
-Residual Bottleneck
- ↓
-Attention Decoder
- ↓
-1x1 Conv
- ↓
-Enhanced Spectrogram
+Output:
+    Predicted clean normalized log spectrogram
 
 ==========================================================
 """
@@ -134,6 +119,7 @@ class ResidualAttentionUNet(nn.Module):
             skip_channels=c * 2,
             out_channels=c
         )
+
         self.dec0 = DecoderBlock(
             in_channels=c,
             skip_channels=c,
@@ -141,25 +127,30 @@ class ResidualAttentionUNet(nn.Module):
         )
 
         # ======================================================
-        # Final Layer
+        # Final Output Layer
+        # ======================================================
+        #
+        # IMPORTANT:
+        # No Sigmoid here.
+        #
+        # The network must be able to output both positive
+        # and negative normalized spectrogram values.
+        #
         # ======================================================
 
-        self.mask = nn.Sequential(
-            nn.Conv2d(
-               c,
-               1,
-               kernel_size=1
-            ),
-            nn.Sigmoid()
+        self.output = nn.Conv2d(
+            c,
+            OUTPUT_CHANNELS,
+            kernel_size=1
         )
 
     def forward(self, x):
 
-        # Initial
+        # ======================================================
+        # Encoder
+        # ======================================================
 
         x0 = self.stem(x)
-
-        # Encoder
 
         s1, p1 = self.enc1(x0)
 
@@ -169,11 +160,15 @@ class ResidualAttentionUNet(nn.Module):
 
         s4, p4 = self.enc4(p3)
 
+        # ======================================================
         # Bottleneck
+        # ======================================================
 
         b = self.bottleneck(p4)
 
+        # ======================================================
         # Decoder
+        # ======================================================
 
         d4 = self.dec4(
             b,
@@ -200,8 +195,10 @@ class ResidualAttentionUNet(nn.Module):
             x0
         )
 
-        mask = self.mask(d0)
+        # ======================================================
+        # Direct Clean Spectrogram Prediction
+        # ======================================================
 
-        enhanced = x * mask
+        output = self.output(d0)
 
-        return enhanced
+        return output
