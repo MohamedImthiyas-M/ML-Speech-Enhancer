@@ -186,9 +186,9 @@ and:
 Before starting training, check whether the dataset is detected correctly.
 
 Run:
-
+```bash
 python test_dataset.py
-
+```
 You should see something similar to:
 
 Total audio pairs: 1217
@@ -197,22 +197,22 @@ The exact number depends on the dataset you use.
 
 If the audio pairs are detected successfully, continue.
 
-8. Test the Model
+# 8. Test the Model
 
 Run:
-
+```bash
 python test_unet.py
-
+```
 This checks whether the U-Net model can process a spectrogram correctly.
 
 If the test completes without an error, the model architecture is working.
 
-9. Test the Dataset Shape
+# 9. Test the Dataset Shape
 
 Run:
-
+```bash
 python test_shape.py
-
+```
 You should see something similar to:
 
 Noisy : torch.Size([1, 257, ...])
@@ -221,12 +221,12 @@ Phase : torch.Size([257, ...])
 
 The exact dimensions may vary depending on the audio configuration.
 
-10. Train the AI Model
+# 10. Train the AI Model
 
 Once the dataset and model tests work, start training:
-
+```bash
 python train.py
-
+```
 The training process will:
 
 Load noisy speech
@@ -238,11 +238,11 @@ Use GPU acceleration when available
 Save model checkpoints
 
 You should see something similar to:
-
+```bash
 Total audio pairs: 1217
 
 Train Epoch 1/100:
-
+```
 Training time depends on:
 
 GPU
@@ -251,7 +251,8 @@ Dataset size
 Number of epochs
 Audio duration
 Model configuration
-11. Model Checkpoints
+
+# 11. Model Checkpoints
 
 During training, model checkpoints are saved in:
 
@@ -259,18 +260,16 @@ checkpoints/
 
 The checkpoint directory is created automatically when needed.
 
-Do not manually create model checkpoint files.
-
-12. Enhancing an Audio File
+# 12. Enhancing an Audio File
 
 After training, use:
-
+```bash
 python inference.py
-
+```
 The inference system processes the audio using the trained model.
 
 The pipeline is:
-
+```bash
 Input Audio
      ↓
 Audio Loading
@@ -286,10 +285,10 @@ Enhanced Spectrogram
 Inverse STFT
      ↓
 Enhanced Audio
-
+```
 The supported audio formats depend on the implementation of the audio conversion module and installed audio libraries.
 
-13. Output Files
+# 13. Output Files
 
 Enhanced audio files are saved in:
 
@@ -302,20 +301,20 @@ outputs/
 
 The outputs directory is created automatically when needed.
 
-14. Graphical User Interface
+# 14. Graphical User Interface
 
 After the GUI is completed, start the application using:
-
+```bash
 python app.py
-
+```
 The application will provide a user-friendly interface for selecting an audio file and processing it with the trained model.
 
-🧠 Model Architecture
+# 🧠 Model Architecture
 
 This project uses a Residual Attention U-Net architecture.
 
 The complete processing pipeline is:
-
+```bash
 Noisy Audio
      ↓
 STFT
@@ -341,7 +340,11 @@ Predicted Clean Spectrogram
 Inverse STFT
      ↓
 Enhanced Audio
-📁 Project Structure
+```
+
+# 📁 Project Structure
+
+```bash
 ML-Speech-Enhancer/
 │
 ├── models/
@@ -380,14 +383,16 @@ ML-Speech-Enhancer/
 ├── README.md
 ├── .gitignore
 └── LICENSE
-⚙️ Configuration
+```
+
+# ⚙️ Configuration
 
 Most project settings are controlled from:
-
+```bash
 config.py
-
+```
 Important settings include:
-
+```bash
 SAMPLE_RATE = 16000
 
 AUDIO_DURATION = 2
@@ -405,11 +410,11 @@ EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 BASE_CHANNELS = 16
-
+```
 These settings can be changed depending on your hardware and experiment.
 
-💻 Recommended Hardware
-Training
+# 💻 Recommended Hardware
+## Training
 
 Recommended:
 
@@ -420,16 +425,16 @@ SSD storage
 
 A GPU with more VRAM can allow larger batch sizes and longer audio segments.
 
-Inference
+## Inference
 
 Inference can run on:
 
-NVIDIA GPU
-CPU
+**NVIDIA GPU**
+**CPU**
 
 CPU inference will generally be slower.
 
-🛠️ Troubleshooting
+# 🛠️ Troubleshooting
 CUDA Out Of Memory
 
 If you get:
@@ -437,20 +442,21 @@ If you get:
 torch.OutOfMemoryError: CUDA out of memory
 
 try reducing:
-
+```bash
 BATCH_SIZE = 1
-
+```
 and:
-
+```bash
 AUDIO_DURATION = 2
+```
 
 If necessary, reduce:
-
+```bash
 BASE_CHANNELS = 8
-
+```
 This can help when using a GPU with limited VRAM.
 
-CUDA is False
+**CUDA is False**
 
 If:
 
@@ -465,10 +471,10 @@ Install the appropriate PyTorch build for your system.
 
 The project can still run on CPU.
 
-Dataset Shows 0 Pairs
+**Dataset Shows 0 Pairs**
 
 Check that your files are arranged correctly:
-
+```bash
 dataset/
 │
 ├── clean_speech/
@@ -478,10 +484,10 @@ dataset/
 └── noisy_speech/
     ├── 1.wav
     └── 2.wav
-
+```
 The filenames must match.
 
-For example:
+**For example:**
 
 clean_speech/1.wav
 noisy_speech/1.wav
@@ -495,10 +501,10 @@ noisy_speech/noisy_1.wav
 
 will not be recognized as a matching pair by the current dataset loader.
 
-🔬 Training Pipeline
+# Training Pipeline
 
 The complete training process is:
-
+```bash
 Audio Dataset
      ↓
 Audio Loading
@@ -522,7 +528,9 @@ Backpropagation
 Optimizer
      ↓
 Checkpoint
-📌 Important Notes
+```
+
+# 📌 Important Notes
 
 This project is intended for:
 
@@ -543,19 +551,3 @@ Model configuration
 Hardware
 
 A trained model should be evaluated using appropriate speech-quality metrics and listening tests before being considered production-ready.
-
-🤝 Contributing
-
-Contributions are welcome.
-
-You can contribute by:
-
-Improving the model
-Adding new loss functions
-Improving preprocessing
-Adding evaluation metrics
-Improving the GUI
-Fixing bugs
-Improving documentation
-
-Before submitting major changes, make sure the existing tests still work.
